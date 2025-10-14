@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Jason’s Writing Tracker</title>
+<style>
+  :root{
+    --bg: #fff;
+    --text: #111;
+    --muted:#6b7280;
+    --grid-gap: 3px;
+    --cell: 12px;
+    --radius: 2px;
+
+    /* greens (tweakable) */
+    --lvl0:#ebedf0;    /* 0 words */
+    --lvl1:#c6f6d5;    /* <500 */
+    --lvl2:#68d391;    /* 500–1999 */
+    --lvl3:#2f855a;    /* >=2000 */
+    --accent:#0969da;  /* links */
+  }
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  }
+  .container{ max-width: 980px; margin: 40px auto; padding: 0 20px; }
+  header{ margin-bottom: 18px; }
+  h1{ margin:0 0 6px 0; font-size: 26px; font-weight:700; letter-spacing:-0.2px; }
+  .sub{ color: var(--muted); margin-top: 4px; }
+
+  .controls{
+    display:flex; gap:10px; align-items:center; margin: 14px 0 8px;
+  }
+  select{ padding:6px 10px; border:1px solid #e5e7eb; border-radius:8px; background:#fff; }
+
+  /* month labels row */
+  .months{ display:flex; margin-left: 32px; color: var(--muted); font-size:12px; gap: 22px; margin-bottom:6px; }
+  .months span{ width: calc(var(--cell) * 4.4); text-align:left; }
+
+  .grid{
+    display:grid;
+    grid-template-columns: 32px repeat(53, var(--cell));
+    grid-auto-rows: var(--cell);
+    gap: var(--grid-gap);
+    align-items:center;
+  }
+  .weekday{ color: var(--muted); font-size:12px; height: var(--cell); display:flex; align-items:center; }
+  .cell{
+    width: var(--cell); height: var(--cell); border-radius: var(--radius);
+    background: var(--lvl0); position: relative;
+  }
+  .cell[data-level="1"]{ background: var(--lvl1); }
+  .cell[data-level="2"]{ background: var(--lvl2); }
+  .cell[data-level="3"]{ background: var(--lvl3); }
+
+  /* tooltip */
+  .cell:hover::after{
+    content: attr(data-tip);
+    position: absolute; z-index: 5;
+    left: 50%; top: -8px; transform: translate(-50%, -100%);
+    background:#111; color:#fff; white-space:nowrap;
+    font-size:12px; padding:6px 8px; border-radius:6px;
+    pointer-events:none;
+  }
+  .legend{
+    display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; margin-top:6px;
+  }
+  .swatch{ width: var(--cell); height: var(--cell); border-radius: var(--radius); border:1px solid #e5e7eb; }
+  .stats{
+    display:flex; gap:18px; flex-wrap:wrap; margin-top:12px; color:#111;
+  }
+  .stat{ background:#f8fafc; border:1px solid #e5e7eb; border-radius:10px; padding:10px 12px; }
+  a{ color: var(--accent); text-decoration:none; }
+  a:hover{ text-decoration:underline; }
+
+  @media (max-width:640px){
+    :root{ --cell: 10px; --grid-gap: 2px; }
+    .months{ gap: 14px; margin-left:28px; }
+    .months span{ width: calc(var(--cell) * 4.2); }
+  }
+</style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Jason’s Writing Tracker</h1>
+      <div class="sub" id="subtitle">Loading…</div>
+    </header>
+
+    <div class="controls">
+      <label for="year">Year:&nbsp;</label>
+      <select id="year"></select>
+    </div>
+
+    <div class="months" id="monthLabels"></div>
+
+    <div class="grid" id="grid">
+      <!-- left column weekday labels -->
+      <div class="weekday">Mon</div>
+      <div class="weekday">Tue</div>
+      <div class="weekday">Wed</div>
+      <div class="weekday">Thu</div>
+      <div class="weekday">Fri</div>
+      <div class="weekday">Sat</div>
+      <div class="weekday">Sun</div>
+      <!-- cells injected via JS -->
+    </div>
+
+    <div class="legend">
+      Less
+      <span class="swatch" style="background:var(--lvl0)"></span>
+      <span class="swatch" style="background:var(--lvl1)"></span>
+      <span class="swatch" style="background:var(--lvl2)"></span>
+      <span class="swatch" style="background:var(--lvl3)"></span>
+      More
+    </div>
+
+    <div class="stats" id="stats"></div>
+
+    <p class="sub" style="margin-top:14px">
+      Data source: <a id="srcLink" href="#" target="_blank" rel="noopener">Obsidian Publish</a>
+    </p>
+  </div>
+
+<script>
+/*** CONFIG ***/
+const SOURCE_URL = "https://jasoncarman.com/Writing+Progress";
+/* If your Obsidian site blocks cross-origin fetch, set USE_PROXY=true and
+   deploy the Cloudflare Worker from Step 4, then set PROXY_ORIGIN accordingly. */
+const USE_PROXY = false;                         // toggle to true if CORS blocked
+const PROXY_ORIGIN = "https://your-proxy.your.workers.dev"; // e.g. https://words-proxy.jasoncarman.workers.dev
+
+/* COLOR THRESHOLDS */
+function levelForCount(n){
+  if (!n || n<=0) return 0;
+  if (n < 500) return 1;
+  if (n < 2000) return 2;
+  return 3;
+}
+
+/*** FETCH & PARSE ***/
+async function fetchSource(){
+  const url = USE_PROXY ? `${PROXY_ORIGIN}/?url=${encodeURIComponent(SOURCE_URL)}` : SOURCE_URL;
+  const res = await fetch(url, {mode: USE_PROXY ? "cors" : "cors"});
+  if (!res.ok) throw new Error(`Fetch failed ${res.status}`);
+  const text = await res.text();
+  return text;
+}
+
+function parseEntries(text){
+  // strip HTML to text if needed
+  const isHTML = /<\s*html|<\s*body|<\s*div/i.test(text);
+  let raw = text;
+  if (isHTML){
+    const tmp = document.createElement("div");
+    tmp.innerHTML = text;
+    raw = tmp.innerText || tmp.textContent || "";
+  }
+  const lines = raw.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+
+  // Regex: Month DD, YYYY: NNNN
+  const rx = /^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),\s*(\d{4})\s*:\s*([0-9,]+)\s*$/i;
+
+  const entries = [];
+  for(const line of lines){
+    const m = line.match(rx);
+    if (!m) continue;
+    const [_, month, dd, yyyy, countStr] = m;
+    const dateStr = `${month} ${dd}, ${yyyy}`;
+    const date = new Date(dateStr);
+    if (isNaN(date)) continue;
+    const count = parseInt(countStr.replace(/,/g, ""), 10);
+    entries.push({ date: new Date(date.getFullYear(), date.getMonth(), date.getDate()), count });
+  }
+  return entries;
+}
+
+/*** BUILD YEARS ***/
+function groupByYear(entries){
+  const byYear = new Map();
+  for (const e of entries){
+    const y = e.date.getFullYear();
+    if (!byYear.has(y)) byYear.set(y, []);
+    byYear.get(y).push(e);
+  }
+  for (const [y, arr] of byYear){
+    arr.sort((a,b)=>a.date-b.date);
+  }
+  return byYear;
+}
+
+/*** STATS ***/
+function longestStreak(daysMap, year){
+  // streak of consecutive days with count > 0
+  const start = new Date(year, 0, 1);
+  const end   = new Date(year, 11, 31);
+  let best = 0, cur = 0;
+  for(let d = new Date(start); d <= end; d.setDate(d.getDate()+1)){
+    const key = d.toISOString().slice(0,10);
+    const n = daysMap.get(key) || 0;
+    if (n>0){ cur++; best = Math.max(best, cur); }
+    else cur = 0;
+  }
+  return best;
+}
+
+function yearTotals(daysMap, year){
+  const start = new Date(year,0,1);
+  const end   = new Date(year,11,31);
+  let total=0, days=0, writtenDays=0;
+  for(let d=new Date(start); d<=end; d.setDate(d.getDate()+1)){
+    const k = d.toISOString().slice(0,10);
+    const n = daysMap.get(k) || 0;
+    total += n;
+    days++;
+    if (n>0) writtenDays++;
+  }
+  const avgPerCalendarDay = Math.round(total / days);
+  return { total, days, writtenDays, avgPerCalendarDay };
+}
+
+/*** RENDER ***/
+function renderYearsSelect(years){
+  const sel = document.getElementById("year");
+  sel.innerHTML = "";
+  const sorted = [...years].sort((a,b)=>b-a); // newest first
+  for (const y of sorted){
+    const opt = document.createElement("option");
+    opt.value = y; opt.textContent = y;
+    sel.appendChild(opt);
+  }
+  return sorted[0];
+}
+
+function monthLabelsForYear(year){
+  const labels = [];
+  for(let m=0;m<12;m++){
+    const short = new Date(year,m,1).toLocaleString("en-US",{month:"short"});
+    labels.push(short);
+  }
+  return labels;
+}
+
+function renderMonthHeader(year){
+  const el = document.getElementById("monthLabels");
+  el.innerHTML = "";
+  // approximate spacing: 52/12 ~ 4.33 weeks per month
+  const labs = monthLabelsForYear(year);
+  labs.forEach(s=>{
+    const span = document.createElement("span");
+    span.textContent = s;
+    el.appendChild(span);
+  });
+}
+
+function renderGrid(daysMap, year){
+  const grid = document.getElementById("grid");
+  // clear old cells while keeping left weekday labels (7)
+  while (grid.children.length > 7) grid.removeChild(grid.lastChild);
+
+  // compute first Monday column of the year
+  const first = new Date(year,0,1);
+  // Find Monday of the week containing Jan 1
+  const dow = (first.getDay()+6)%7; // 0=Mon, ... 6=Sun
+  const gridStart = new Date(first); gridStart.setDate(first.getDate()-dow);
+
+  const last  = new Date(year,11,31);
+  const gridEnd = new Date(last); gridEnd.setDate(last.getDate() + (6 - ((last.getDay()+6)%7)));
+
+  // fill columns week by week, rows Mon..Sun
+  for(let d=new Date(gridStart); d<=gridEnd; d.setDate(d.getDate()+1)){
+    // insert a new column each Monday: implemented by CSS grid implicit flow (we add seven cells per week)
+    const isYearDay = (d.getFullYear()===year);
+    const key = d.toISOString().slice(0,10);
+    const n = isYearDay ? (daysMap.get(key)||0) : -1;
+
+    if (d.getDay()===1){ /* Monday */ 
+      // add a left gutter label only for first row; labels already there (7 rows)
+    }
+
+    const cell = document.createElement("div");
+    cell.className = "cell";
+    if (n>=0){
+      cell.dataset.level = String(levelForCount(n));
+      const tip = `${d.toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}: ${n.toLocaleString()} words`;
+      cell.setAttribute("data-tip", tip);
+    }else{
+      // out-of-year filler
+      cell.style.visibility = "hidden";
+    }
+    grid.appendChild(cell);
+  }
+}
+
+function renderStats(daysMap, year){
+  const {total, days, writtenDays, avgPerCalendarDay} = yearTotals(daysMap, year);
+  const streak = longestStreak(daysMap, year);
+  const stats = document.getElementById("stats");
+  stats.innerHTML = `
+    <div class="stat"><strong>Total</strong><br>${total.toLocaleString()} words</div>
+    <div class="stat"><strong>Longest streak</strong><br>${streak} days</div>
+    <div class="stat"><strong>Average / day</strong><br>${avgPerCalendarDay.toLocaleString()} words</div>
+    <div class="stat"><strong>Days written</strong><br>${writtenDays} / ${days}</div>
+  `;
+  document.getElementById("subtitle").textContent =
+    `Total words in ${year}: ${total.toLocaleString()}`;
+}
+
+function buildDaysMapForYear(entries, year){
+  const map = new Map();
+  const start = new Date(year,0,1);
+  const end   = new Date(year,11,31);
+  for(let d=new Date(start); d<=end; d.setDate(d.getDate()+1)){
+    map.set(d.toISOString().slice(0,10), 0);
+  }
+  for (const e of entries){
+    if (e.date.getFullYear()===year){
+      const k = e.date.toISOString().slice(0,10);
+      // sum if multiple lines same date (rare)
+      map.set(k, (map.get(k)||0) + (e.count||0));
+    }
+  }
+  return map;
+}
+
+/*** MAIN ***/
+(async function(){
+  // source link
+  document.getElementById("srcLink").href = SOURCE_URL;
+
+  let text;
+  try{
+    text = await fetchSource();
+  }catch(err){
+    document.getElementById("subtitle").textContent = `Error loading data: ${err.message}`;
+    console.error(err);
+    return;
+  }
+
+  const entries = parseEntries(text);
+  if (!entries.length){
+    document.getElementById("subtitle").textContent = "No data found on the source page.";
+    return;
+  }
+  const byYear = groupByYear(entries);
+  const newestYear = renderYearsSelect(byYear.keys());
+
+  function draw(year){
+    const map = buildDaysMapForYear(entries, year);
+    renderMonthHeader(year);
+    renderGrid(map, year);
+    renderStats(map, year);
+  }
+
+  draw(newestYear);
+  document.getElementById("year").addEventListener("change", e=> draw(parseInt(e.target.value,10)));
+})();
+</script>
+</body>
+</html>
