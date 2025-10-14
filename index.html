@@ -149,15 +149,35 @@ async function fetchSource(){
 }
 
 function parseEntries(text){
-  // strip HTML to text if needed
-  const isHTML = /<\s*html|<\s*body|<\s*div/i.test(text);
+  // normalize possible HTML content from Obsidian Publish
   let raw = text;
-  if (isHTML){
+  if (/<[a-z][\s\S]*>/i.test(text)) {
     const tmp = document.createElement("div");
     tmp.innerHTML = text;
-    raw = tmp.innerText || tmp.textContent || "";
+    // extract text from all paragraph/list elements
+    raw = Array.from(tmp.querySelectorAll("p, li, div, span"))
+      .map(el => el.textContent.trim())
+      .join("\n");
   }
-  const lines = raw.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+
+  const lines = raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+
+  // Regex: Month DD, YYYY: NNNN
+  const rx = /^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),\s*(\d{4})\s*:\s*([0-9,]+)\s*$/i;
+
+  const entries = [];
+  for (const line of lines) {
+    const m = line.match(rx);
+    if (!m) continue;
+    const [_, month, dd, yyyy, countStr] = m;
+    const date = new Date(`${month} ${dd}, ${yyyy}`);
+    if (isNaN(date)) continue;
+    const count = parseInt(countStr.replace(/,/g, ""), 10);
+    entries.push({ date, count });
+  }
+  return entries;
+}
+
 
   // Regex: Month DD, YYYY: NNNN
   const rx = /^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),\s*(\d{4})\s*:\s*([0-9,]+)\s*$/i;
